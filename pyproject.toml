@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeline"
+version = "0.1.0"
+description = "Real-time event pipeline (Kafka + Spark + Postgres) for 8 Ball Pool events"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# Data-quality service and event generator.
+dq = [
+    "confluent-kafka==2.16.1",
+    "jsonschema==4.26.0",
+    "PyYAML==6.0.3",
+]
+# Spark jobs (installed in the Spark image only; needs a JVM).
+spark = [
+    "pyspark==4.3.0",
+    "psycopg[binary]==3.3.8",
+]
+dev = [
+    "pytest==9.2.0",
+]
+
+[project.scripts]
+pipeline-generator = "pipeline.generator.main:main"
+pipeline-dq = "pipeline.dq.service:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: needs the docker-compose Kafka stack (run via the `tests` service)",
+]

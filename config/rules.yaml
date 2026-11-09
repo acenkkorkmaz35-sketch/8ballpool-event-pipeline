@@ -1,0 +1,18 @@
+# Data-quality rules applied by the DQ service to every valid event.
+# Each rule: events (event types), field (dot-notation path), transform, optional params.
+# A rule is skipped when the event type does not match or the field is absent.
+# Relative paths in params (mapping_file) resolve against this file's directory.
+rules:
+  - events: [init]
+    field: platform
+    transform: upper
+  - events: [match]
+    field: user-a-postmatch-info.platform
+    transform: upper
+  - events: [match]
+    field: user-b-postmatch-info.platform   # optional object; rule skipped if absent
+    transform: upper
+  - events: [init]
+    field: country
+    transform: map
+    params: { mapping_file: country_codes.csv, on_missing: keep }   # keep | null (or "null") | any literal string, e.g. "UNKNOWN"

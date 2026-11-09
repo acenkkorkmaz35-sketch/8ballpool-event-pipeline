@@ -1,0 +1,39 @@
+{
+    "description": "Clean-events contract for 'init' events, produced by the DQ service (user-id is a string; country and platform are the rule-transformed values).",
+    "$schema": "http://json-schema.org/draft-03/schema#",
+    "title": "Init clean event",
+    "type": "object",
+    "required": true,
+    "properties": {
+        "event-type": {
+            "enum": [
+                "init"
+            ],
+            "required": true
+        },
+        "time": {
+            "type": "integer",
+            "minimum": 0,
+            "required": true
+        },
+        "user-id": {
+            "type": "string",
+            "required": true,
+            "minLength": 1,
+            "maxLength": 50
+        },
+        "country": {
+            "type": "string",
+            "required": true,
+            "minLength": 1,
+            "maxLength": 100
+        },
+        "platform": {
+            "type": "string",
+            "required": true,
+            "minLength": 1,
+            "maxLength": 100
+        }
+    },
+    "additionalProperties": false
+}

@@ -1,0 +1,165 @@
+# Real-time pipeline stack: Kafka -> DQ service -> Spark streaming -> Postgres. Start with:
+#   docker compose up -d --build
+# Query the results from the host:  docker compose exec postgres psql -U pipeline -c "select ..."
+# (or psql -h localhost -p 5433 -U pipeline).
+# Run the tests (not started by a plain `up`, they belong to the `test` profile):
+#   docker compose --profile test run --rm tests                              # unit tests
+#   docker compose --profile test run --rm tests pytest tests/spark -v        # Spark logic (local session)
+#   docker compose --profile test run --rm tests pytest tests/kafka_unit -v   # DQ service control flow (fakes)
+#   docker compose --profile test run --rm tests pytest tests/integration -v  # needs the whole stack up
+
+x-app-build: &app-build
+  context: .
+  dockerfile: docker/app.Dockerfile
+
+x-spark-build: &spark-build
+  context: .
+  dockerfile: docker/spark.Dockerfile
+
+services:
+  kafka:
+    image: apache/kafka:4.3.2
+    hostname: kafka
+    ports:
+      - "127.0.0.1:29092:29092"   # host listener, loopback only (debugging from this machine)
+    environment:
+      # Single node acting as both KRaft controller and broker (no ZooKeeper).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL = containers (kafka:9092), HOST = your machine (localhost:29092).
+      KAFKA_LISTENERS: INTERNAL://:9092,HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # With one broker the internal topics must have replication factor 1, otherwise the
+      # transaction coordinator can never create __transaction_state and transactions hang.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Store the log on the kafka-data volume (the image default is /tmp/kraft-combined-logs,
+      # which is not persisted).
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 12
+      start_period: 20s
+
+  init-topics:
+    image: apache/kafka:4.3.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./docker/init-topics.sh:/init-topics.sh:ro
+    entrypoint: ["/bin/sh", "/init-topics.sh"]
+    restart: "no"
+
+  dq-service:
+    build: *app-build
+    image: pipeline-app:dev
+    command: ["pipeline-dq"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-topics:
+        condition: service_completed_successfully
+    # A fatal Kafka error makes the service exit non-zero; restart + re-bootstrap recovers.
+    restart: on-failure
+
+  generator:
+    build: *app-build
+    image: pipeline-app:dev
+    command: ["pipeline-generator"]
+    environment:
+      EVENTS_PER_SECOND: "50"
+      INVALID_RATE: "0.01"
+      SEED: "42"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-topics:
+        condition: service_completed_successfully
+    restart: on-failure
+
+  postgres:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: pipeline
+      POSTGRES_PASSWORD: pipeline
+      POSTGRES_DB: pipeline
+    ports:
+      # Loopback only; host port 5433 so a local Postgres on 5432 does not clash.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, on first start of an empty data volume (`down -v` to re-run).
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U pipeline -d pipeline"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Live minute aggregator: clean-events -> three update-mode queries -> Postgres upserts.
+  # Same image as `tests` (python + JRE + pyspark + baked Kafka connector).
+  spark-streaming:
+    build: *spark-build
+    image: pipeline-spark:dev
+    command: ["python", "-m", "pipeline.spark.streaming_job"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-topics:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      # One checkpoint dir per query (/checkpoints/<table>); survives restarts so the job
+      # resumes from its stored offsets and state instead of replaying the topic.
+      - spark-checkpoints:/checkpoints
+    # Local-mode Spark: 1g driver heap + JVM overhead. Capped to keep the whole stack within
+    # the 8 CPU / ~7.4 GB budget.
+    mem_limit: 2g
+    cpus: 2
+    restart: on-failure
+
+  # Daily batch: distinct users per (day, country, platform). The entrypoint is the job itself,
+  # so the default command loops (recompute today every 5 minutes) and an on-demand run is
+  #   docker compose run --rm spark-batch --date 2026-11-09
+  # (Spark in local mode, same image as spark-streaming; the whole topic is re-read per run.)
+  spark-batch:
+    build: *spark-build
+    image: pipeline-spark:dev
+    entrypoint: ["python", "-m", "pipeline.spark.daily_job"]
+    command: ["--loop"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-topics:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    mem_limit: 1536m
+    cpus: 2
+    restart: on-failure
+
+  # One image (Python 3.12 + JRE + pyspark + Kafka connector) runs every test layer:
+  # unit, spark and integration.
+  tests:
+    build: *spark-build
+    image: pipeline-spark:dev
+    command: ["pytest", "tests/unit", "-q"]
+    profiles: ["test"]
+
+volumes:
+  kafka-data:
+  postgres-data:
+  spark-checkpoints:
