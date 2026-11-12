@@ -11,15 +11,6 @@ generator ──► raw-events ──► dq-service ──► clean-events ─�
                                  └──► dead-letter (invalid events + reasons)
 ```
 
-## AI assistance
-
-I built this together with Claude Code (an AI coding assistant), which I used for
-implementation, testing and review. The design decisions are mine: I chose the language, the
-data-quality approach, the per-minute metric semantics and the delivery shape from the
-alternatives we laid out, and approved the overall design. The reasoning and trade-offs behind
-each decision are documented in this README (the design spec and implementation plan are in
-`docs/superpowers/`), and I'm happy to walk through any part.
-
 ## Where each assessment level lives
 
 | Level | Component | Main files | Output |
@@ -391,6 +382,15 @@ src/pipeline/spark/       parsing, aggregations, sink, streaming_job, daily_job
 tests/                    unit, kafka_unit, spark, integration
 docs/superpowers/         design spec and implementation plan
 ```
+
+## AI assistance
+
+I built this together with Claude Code (an AI coding assistant), which I used for
+implementation, testing and review. The design decisions are mine: I chose the language, the
+data-quality approach, the per-minute metric semantics and the delivery shape from the
+alternatives we laid out, and approved the overall design. The reasoning and trade-offs behind
+each decision are documented in this README (the design spec and implementation plan are in
+`docs/superpowers/`), and I'm happy to walk through any part.
 
 ## Verified on
 
