@@ -4,7 +4,7 @@ from datetime import date
 
 from spark_events import init, match, purchase
 
-from pipeline.spark.aggregations import daily_users
+from pipeline.spark.aggregations import daily_users, daily_users_all_days
 from pipeline.spark.parsing import parse_clean_events, to_participants
 
 DAY = date(2023, 11, 14)
@@ -73,3 +73,37 @@ def test_daily_users_enriched_unknown_platform_stays_unknown(make_events):
 
 def test_daily_users_empty_day_has_no_rows(make_events):
     assert _daily(make_events, [init("A", t=DAY_START + 1)], date(2000, 1, 1)).collect() == []
+
+
+def test_daily_users_all_days_reports_every_utc_day(make_events):
+    events = [
+        init("A", "TR", "ANDROID", t=DAY_START - 1),  # 2023-11-13 23:59:59 UTC
+        init("A", "TR", "ANDROID", t=DAY_START + 5),  # same user, next day
+        init("B", "TR", "ANDROID", t=DAY_START + 6),
+        init("C", "GB", "IOS", t=DAY_END + 1),  # 2023-11-15
+    ]
+    result = daily_users_all_days(to_participants(parse_clean_events(make_events(events))))
+    assert result.columns == ["day", "country", "platform", "distinct_users"]
+    got = {(r.day, r.country, r.platform): r.distinct_users for r in result.collect()}
+    assert got == {
+        (date(2023, 11, 13), "TR", "ANDROID"): 1,
+        (DAY, "TR", "ANDROID"): 2,
+        (date(2023, 11, 15), "GB", "IOS"): 1,
+    }
+
+
+def test_daily_users_all_days_matches_single_day_result(make_events):
+    events = [
+        init("A", "TR", "ANDROID", t=DAY_START + 10),
+        match("A", "B", "TR", "GB", t=DAY_START + 20),
+        purchase("C", 4.99, country="GB", t=DAY_START + 30),
+        init("D", "TR", "IOS", t=DAY_END + 30),
+    ]
+    participants = to_participants(parse_clean_events(make_events(events)))
+    single = {(r.country, r.platform): r.distinct_users for r in daily_users(participants, DAY).collect()}
+    every = {
+        (r.country, r.platform): r.distinct_users
+        for r in daily_users_all_days(participants).collect()
+        if r.day == DAY
+    }
+    assert every == single

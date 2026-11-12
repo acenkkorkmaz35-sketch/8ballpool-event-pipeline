@@ -95,3 +95,19 @@ def daily_users(participants: DataFrame, day: date) -> DataFrame:
         .agg(F.countDistinct("user_id").alias("distinct_users"))
         .select(F.lit(day).cast("date").alias("day"), "country", "platform", "distinct_users")
     )
+
+
+def daily_users_all_days(participants: DataFrame) -> DataFrame:
+    """Exact distinct users per (UTC day, country, platform) for every day in the input.
+
+    Same definition as :func:`daily_users`, but grouped by ``to_date(event_time)`` instead of
+    filtered to one day, so one pass over the topic yields a report for each day it holds
+    (used for the backfill on start-up and ``--all-days``). Columns: ``day`` (date),
+    ``country, platform, distinct_users``.
+    """
+    return (
+        participants.withColumn("day", F.to_date("event_time"))
+        .groupBy("day", "country", "platform")
+        .agg(F.countDistinct("user_id").alias("distinct_users"))
+        .select("day", "country", "platform", "distinct_users")
+    )

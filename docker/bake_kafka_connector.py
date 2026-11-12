@@ -42,6 +42,7 @@ def artifact(jar_name: str) -> str:
 
 
 def main() -> None:
+    """Resolve the Kafka connector for the installed pyspark and copy its jars into pyspark/jars."""
     spark_version = pyspark.__version__
     package = f"org.apache.spark:spark-sql-kafka-0-10_2.13:{spark_version}"
     spark = (

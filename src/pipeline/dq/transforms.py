@@ -19,6 +19,7 @@ def register(name: str) -> Callable[[TransformFactory], TransformFactory]:
     """Decorator registering a transform factory under ``name``."""
 
     def decorator(factory: TransformFactory) -> TransformFactory:
+        """Store ``factory`` in the registry and return it unchanged."""
         _REGISTRY[name] = factory
         return factory
 
@@ -44,6 +45,7 @@ def _string_transform(method: str) -> TransformFactory:
     """Create a factory for a str method; non-string values pass through unchanged."""
 
     def factory(params: dict, base_dir: Path) -> Callable[[Any], Any]:
+        """Build the transform (string transforms take no params)."""
         return lambda value: getattr(value, method)() if isinstance(value, str) else value
 
     return factory
@@ -77,6 +79,7 @@ def _map_factory(params: dict, base_dir: Path) -> Callable[[Any], Any]:
         mapping = {row["code"]: row["name"] for row in csv.DictReader(handle)}
 
     def apply(value: Any) -> Any:
+        """Map a known code to its name; otherwise apply the ``on_missing`` policy."""
         if isinstance(value, str) and value in mapping:
             return mapping[value]
         if on_missing == "keep":

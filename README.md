@@ -16,7 +16,7 @@ generator ──► raw-events ──► dq-service ──► clean-events ─�
 | Level | Component | Main files | Output |
 |---|---|---|---|
 | Beginner | Kafka (KRaft, single broker) + event generator | `docker-compose.yml`, `docker/init-topics.sh`, `src/pipeline/generator/` | topic `raw-events` |
-| Beginner | Spark batch: daily distinct users by country and platform | `src/pipeline/spark/daily_job.py`, `aggregations.py` (`daily_users`), `sink.py` (`replace_day`) | table `daily_users_by_country_platform` |
+| Beginner | Spark batch: daily distinct users by country and platform | `src/pipeline/spark/daily_job.py`, `aggregations.py` (`daily_users`, `daily_users_all_days`), `sink.py` (`replace_day`) | table `daily_users_by_country_platform` |
 | Semi-Pro | Real-time DQ service: validate, YAML rules (upper / map ...), enrich | `src/pipeline/dq/`, `config/rules.yaml`, `config/country_codes.csv`, `schemas/raw/` | topics `clean-events`, `dead-letter`, `user-profiles` |
 | Pro | Spark Structured Streaming minute aggregator | `src/pipeline/spark/streaming_job.py`, `aggregations.py`, `parsing.py`, `sink.py` | tables `minute_summary`, `minute_revenue_by_country`, `minute_matches_by_country` |
 
@@ -63,10 +63,11 @@ docker compose logs -f dq-service   # one line per batch: consumed / clean / inv
 In Git Bash on Windows, run `export MSYS_NO_PATHCONV=1` first; otherwise Git Bash rewrites
 `/opt/kafka/...` into a Windows path. PowerShell and Linux/macOS shells need nothing.
 
-Run the daily job for a specific UTC day, then exit:
+Run the daily job for a specific UTC day, or for every day held in the topic, then exit:
 
 ```bash
 docker compose run --rm spark-batch --date 2026-11-09
+docker compose run --rm spark-batch --all-days
 ```
 
 If that day computes to zero rows the stored rows are left untouched (the day may simply be
@@ -86,7 +87,7 @@ Stop and delete everything (topics, tables, checkpoints): `docker compose down -
 | `dq-service` | `pipeline-app:dev` | exactly-once consume-transform-produce loop |
 | `postgres` | `postgres:16.15` | report tables, created by `sql/init.sql`; host port `127.0.0.1:5433` |
 | `spark-streaming` | `pipeline-spark:dev` | minute aggregator (3 streaming queries) |
-| `spark-batch` | `pipeline-spark:dev` | daily job, `--loop` every `DAILY_LOOP_SECONDS` (default 300) |
+| `spark-batch` | `pipeline-spark:dev` | daily job, `--loop`: backfills every day in the topic once, then today every `DAILY_LOOP_SECONDS` (default 300) |
 | `tests` | `pipeline-spark:dev` | test runner, `test` profile only (not started by `up`) |
 
 `pipeline-spark:dev` is `python:3.12.16-slim` + OpenJDK 21 JRE + `pyspark==4.3.0`, with the
@@ -257,9 +258,12 @@ Reads the whole `clean-events` topic in batch mode (`read_committed`), expands m
 both participants, keeps one UTC day by event time and computes `countDistinct(user_id)`
 per (country, platform); `countDistinct` is fine in batch. The write is DELETE that day +
 INSERT in one transaction, behind a `pg_advisory_xact_lock` keyed by (table, day), so
-re-runs are idempotent and concurrent runs for the same day serialise. Under compose it loops
-every 300 s over today (UTC) to keep "one command" true; when the UTC date changes it
-recomputes the finished day once more (retried until it succeeds) so that day is complete.
+re-runs are idempotent and concurrent runs for the same day serialise. Under compose it first
+backfills every UTC day already in the topic (one pass, `groupBy(to_date(event_time), country,
+platform)`, so the report covers *each* day as the task asks), then loops every 300 s over
+today (UTC) to keep "one command" true; when the UTC date changes it recomputes the finished
+day once more (retried until it succeeds) so that day is complete. `--all-days` runs the
+backfill on demand.
 
 ### Other choices
 
@@ -381,19 +385,23 @@ docs/superpowers/         design spec and implementation plan
 
 ## Verified on
 
-2026-11-09, clean slate on Windows 11 + Docker Desktop (WSL2, 8 CPU, ~7.4 GB):
-`docker compose down -v`, `docker compose up -d --build`, about 7 minutes of running, then
-`docker compose --profile test run --rm tests pytest -v`: **163 passed** (unit 127,
-kafka_unit 5, spark 25, integration 6) in 113 s. A millisecond-timestamp purchase produced to
-`raw-events` landed in `dead-letter` with the "in the future" reason, and `minute_summary`
-kept receiving rows for the following minutes. Row counts after that (about 14 minutes of
+2026-11-12, clean slate on Windows 11 + Docker Desktop (WSL2, 8 CPU, ~7.4 GB):
+`docker compose down -v`, `docker compose up -d --build`, about 5 minutes of running, then
+`docker compose --profile test run --rm tests pytest`: **170 passed** (unit 132,
+kafka_unit 5, spark 27, integration 6) in 122 s. On start-up `spark-batch` backfilled every day
+already in the topic before looping over today; `docker compose run --rm spark-batch --all-days`
+afterwards wrote 2 days (today plus the 2023 day injected by the integration tests). No
+two-letter country code reached any report table, and platforms were `ANDROID`, `IOS` and
+`UNKNOWN` (0.5% of the day's distinct users). Row counts at that point (about 8 minutes of
 running):
 
 | Table | Rows |
 |---|---|
-| `minute_summary` | 15 |
-| `minute_revenue_by_country` | 232 |
-| `minute_matches_by_country` | 237 |
-| `daily_users_by_country_platform` | 33 |
+| `minute_summary` | 8 |
+| `minute_revenue_by_country` | 123 |
+| `minute_matches_by_country` | 126 |
+| `daily_users_by_country_platform` | 34 |
 
-Platform `UNKNOWN` was 0.60% of the day's distinct users (sum over the daily table's rows).
+The earlier run on 2026-11-09 also checked the plausibility guard: a millisecond-timestamp
+purchase produced to `raw-events` landed in `dead-letter` with the "in the future" reason, and
+`minute_summary` kept receiving rows for the following minutes.

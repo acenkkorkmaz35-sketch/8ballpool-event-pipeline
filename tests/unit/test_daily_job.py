@@ -4,7 +4,36 @@ from datetime import date
 
 import pytest
 
-from pipeline.spark.daily_job import loop_seconds, parse_args, run_loop
+from pipeline.spark.daily_job import group_rows_by_day, loop_seconds, parse_args, run_loop
+
+
+def test_parse_args_all_days_flag():
+    assert parse_args([]).all_days is False
+    assert parse_args(["--all-days"]).all_days is True
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["--all-days", "--date", "2026-11-09"], ["--all-days", "--loop"], ["--all-days", "--allow-empty"]],
+)
+def test_parse_args_rejects_all_days_combinations(argv):
+    with pytest.raises(SystemExit):
+        parse_args(argv)
+
+
+def test_group_rows_by_day_splits_rows_and_drops_the_day_key():
+    rows = [
+        {"day": date(2026, 11, 9), "country": "Turkey", "platform": "IOS", "distinct_users": 3},
+        {"day": date(2026, 11, 10), "country": "Turkey", "platform": "IOS", "distinct_users": 1},
+        {"day": date(2026, 11, 9), "country": "Germany", "platform": "ANDROID", "distinct_users": 2},
+    ]
+    assert group_rows_by_day(rows) == {
+        date(2026, 11, 9): [
+            {"country": "Turkey", "platform": "IOS", "distinct_users": 3},
+            {"country": "Germany", "platform": "ANDROID", "distinct_users": 2},
+        ],
+        date(2026, 11, 10): [{"country": "Turkey", "platform": "IOS", "distinct_users": 1}],
+    }
 
 
 def test_parse_args_defaults_and_date():

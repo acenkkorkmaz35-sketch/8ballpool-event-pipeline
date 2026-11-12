@@ -69,6 +69,7 @@ def make_batch_writer(dsn: str, table: str, key_columns: list[str]) -> Callable[
     """
 
     def write(batch: DataFrame, batch_id: int) -> None:
+        """Upsert one micro-batch (full current values per key) into ``table``."""
         rows = [to_db_row(r.asDict()) for r in batch.collect()]
         written = upsert_rows(dsn, table, key_columns, rows)
         log.info("batch %d: upserted %d rows into %s", batch_id, written, table)

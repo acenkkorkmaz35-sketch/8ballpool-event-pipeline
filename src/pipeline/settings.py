@@ -39,6 +39,7 @@ class Settings:
         d = cls()  # defaults live in one place: the dataclass fields
 
         def get(name: str, default):
+            """Return the env var ``name``, or ``default`` when it is unset or empty."""
             value = env.get(name)
             return default if value is None or value == "" else value
 
